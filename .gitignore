@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+firebase-service-account.json
+database.sqlite
+test_firestore_api.cjs
+check_firestore.cjs
+server_log.txt

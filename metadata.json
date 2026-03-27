@@ -1,0 +1,5 @@
+{
+  "name": "EnviApp",
+  "description": "Plataforma de mensajería multi-tenant para República Dominicana con liquidación D+1",
+  "requestFramePermissions": []
+}
