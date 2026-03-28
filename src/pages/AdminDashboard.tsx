@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { io } from 'socket.io-client';
-import { Package, MapPin, DollarSign, User, Phone, Clock, CheckCircle, Truck, AlertCircle, Home, Wallet, CreditCard, Upload, Plus, X, Users, Menu, Store } from 'lucide-react';
+import { Package, MapPin, DollarSign, User, Phone, Clock, CheckCircle, Truck, AlertCircle, Home, Wallet, CreditCard, Upload, Plus, X, Users, Menu, Store, ExternalLink } from 'lucide-react';
 
 export default function AdminDashboard() {
   const { tenantId } = useParams();
@@ -24,6 +24,12 @@ export default function AdminDashboard() {
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreview, setReceiptPreview] = useState<string>('');
   const [requestSent, setRequestSent] = useState(false);
+
+  // Batch Selection & Zoning State
+  const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
+  const [sectorFilter, setSectorFilter] = useState('');
+  const [batchMessengerId, setBatchMessengerId] = useState('');
+  const [isProcessingBatch, setIsProcessingBatch] = useState(false);
 
   // Modal state for new Mensajero
   const [newMensajeroModalOpen, setNewMensajeroModalOpen] = useState(false);
@@ -77,6 +83,65 @@ export default function AdminDashboard() {
       console.error("Error fetching liquidaciones", error);
     }
   };
+
+  const handleBatchAsignar = async () => {
+    if (!batchMessengerId || selectedOrders.length === 0) return;
+    
+    setIsProcessingBatch(true);
+    try {
+      const res = await fetch('/api/ordenes/batch-asignar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ordenes_ids: selectedOrders,
+          mensajero_id: batchMessengerId,
+          tenant_id: tenantId
+        })
+      });
+
+      if (res.ok) {
+        setSelectedOrders([]);
+        setBatchMessengerId('');
+        // orders will update via socket
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Error en asignación masiva');
+      }
+    } catch (error) {
+      console.error(error);
+      alert('Error de conexión');
+    } finally {
+      setIsProcessingBatch(false);
+    }
+  };
+
+  const verRutaOptimizada = () => {
+    if (selectedOrders.length === 0) return;
+    
+    const selectedData = ordenes.filter(o => selectedOrders.includes(o.id));
+    const destinations = selectedData
+      .map(o => encodeURIComponent(o.destino_direccion))
+      .filter(d => d !== '');
+
+    if (destinations.length === 0) return;
+
+    // Build Google Maps URL: first as destination, others as waypoints
+    const dest = destinations[destinations.length - 1];
+    const waypoints = destinations.slice(0, -1).join('|');
+    const url = `https://www.google.com/maps/dir/?api=1&destination=${dest}${waypoints ? `&waypoints=${waypoints}` : ''}&travelmode=driving`;
+    
+    window.open(url, '_blank');
+  };
+
+  const toggleOrderSelection = (id: string) => {
+    setSelectedOrders(prev => 
+      prev.includes(id) ? prev.filter(oid => oid !== id) : [...prev, id]
+    );
+  };
+
+  const filteredOrdenes = ordenes.filter(o => 
+    sectorFilter === '' || (o.sector && o.sector.toLowerCase().includes(sectorFilter.toLowerCase()))
+  );
 
   useEffect(() => {
     // Fetch initial data
@@ -593,13 +658,85 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
+              {/* Batch Actions & Filters */}
+              <div className="mb-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col sm:flex-row items-center gap-4">
+                  <div className="flex-1 w-full">
+                    <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Filtrar por Sector</label>
+                    <div className="relative">
+                      <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                      <input 
+                        type="text" 
+                        placeholder="Ej: Piantini..." 
+                        value={sectorFilter}
+                        onChange={(e) => setSectorFilter(e.target.value)}
+                        className="w-full pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
+                    </div>
+                  </div>
+                  {sectorFilter && (
+                    <button onClick={() => setSectorFilter('')} className="text-xs text-gray-400 hover:text-red-500 whitespace-nowrap">
+                      Limpiar filtro
+                    </button>
+                  )}
+                </div>
+
+                <div className={`bg-white p-4 rounded-xl border-2 transition-all flex flex-col sm:flex-row items-center gap-4 ${selectedOrders.length > 0 ? 'border-blue-500 shadow-blue-100' : 'border-gray-200 shadow-sm opacity-60 grayscale'}`}>
+                  <div className="flex-1 w-full">
+                    <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">
+                      {selectedOrders.length} Seleccionados - Asignar Lote
+                    </label>
+                    <div className="flex gap-2">
+                      <select 
+                        disabled={selectedOrders.length === 0}
+                        value={batchMessengerId}
+                        onChange={(e) => setBatchMessengerId(e.target.value)}
+                        className="flex-1 bg-gray-50 border border-gray-200 rounded-lg text-xs py-2 px-3 outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">Elegir Mensajero...</option>
+                        {mensajeros.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+                      </select>
+                      <button 
+                        disabled={selectedOrders.length === 0 || !batchMessengerId || isProcessingBatch}
+                        onClick={handleBatchAsignar}
+                        className="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                      >
+                        {isProcessingBatch ? '...' : 'Asignar'}
+                      </button>
+                    </div>
+                  </div>
+                  <button 
+                    disabled={selectedOrders.length === 0}
+                    onClick={verRutaOptimizada}
+                    className="w-full sm:w-auto bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-green-700 disabled:opacity-50 transition-colors flex items-center justify-center"
+                  >
+                    <Truck className="w-4 h-4 mr-2" />
+                    Ver Ruta
+                  </button>
+                </div>
+              </div>
+
             <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
+                  <th scope="col" className="px-4 py-3 text-left">
+                    <input 
+                      type="checkbox" 
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedOrders(filteredOrdenes.filter(o => o.estatus === 'Pendiente').map(o => o.id));
+                        } else {
+                          setSelectedOrders([]);
+                        }
+                      }}
+                      checked={selectedOrders.length > 0 && selectedOrders.length === filteredOrdenes.filter(o => o.estatus === 'Pendiente').length}
+                    />
+                  </th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID / Tienda</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cliente / Destino</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cliente / Sector</th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Finanzas</th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Asignación</th>
@@ -608,15 +745,24 @@ export default function AdminDashboard() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {ordenes.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
                       <Package className="w-12 h-12 mx-auto text-gray-300 mb-3" />
                       <p className="text-lg font-medium text-gray-900">No hay órdenes</p>
                       <p>Las nuevas órdenes aparecerán aquí automáticamente.</p>
                     </td>
                   </tr>
                 ) : (
-                  ordenes.map((orden) => (
-                    <tr key={orden.id} className="hover:bg-gray-50 transition-colors">
+                  filteredOrdenes.map((orden) => (
+                    <tr key={orden.id} className={`hover:bg-gray-50 transition-colors ${selectedOrders.includes(orden.id) ? 'bg-blue-50' : ''}`}>
+                      <td className="px-4 py-4">
+                        <input 
+                          type="checkbox" 
+                          disabled={orden.estatus !== 'Pendiente'}
+                          checked={selectedOrders.includes(orden.id)}
+                          onChange={() => toggleOrderSelection(orden.id)}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
+                        />
+                      </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-gray-900">{orden.tienda_nombre || 'Tienda'}</div>
                         <div className="text-xs text-gray-500 font-mono mt-1">#{orden.id.substring(0, 8)}</div>
@@ -645,9 +791,21 @@ export default function AdminDashboard() {
                               rel="noreferrer" 
                               className="hover:underline flex items-center"
                             >
-                              <MapPin className="w-4 h-4 mr-2 flex-shrink-0" />
+                              <ExternalLink className="w-3 h-3 mr-1" />
                               Ver ubicación en mapa
                             </a>
+                          </div>
+                        )}
+                        {orden.sector && (
+                          <div className="mt-1">
+                            <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-[10px] font-black rounded uppercase tracking-wider border border-blue-200">
+                              {orden.sector}
+                            </span>
+                          </div>
+                        )}
+                        {orden.referencia && (
+                          <div className="text-[10px] text-gray-400 mt-1 italic truncate max-w-[180px]">
+                            Ref: {orden.referencia}
                           </div>
                         )}
                       </td>

@@ -38,7 +38,9 @@ export default function TiendaForm() {
     destino_direccion: '',
     destino_ubicacion_url: '',
     monto_mercancia: '',
-    costo_envio: ''
+    costo_envio: '',
+    sector: '',
+    referencia: ''
   });
 
   const [formData, setFormData] = useState(getEmptyOrder());
@@ -83,6 +85,32 @@ export default function TiendaForm() {
       return () => clearInterval(interval);
     }
   }, [isAuthenticated, tienda]);
+  
+  // VIP Autocomplete Logic
+  useEffect(() => {
+    if (!tienda || formData.cliente_telefono.length < 10) return;
+    
+    const delayDebounceFn = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/clientes-vip/${tienda.id}?telefono=${formData.cliente_telefono}`);
+        if (res.ok) {
+          const clientData = await res.json();
+          // Solo autocompletar si los campos están vacíos para no sobreescribir edición manual accidentalmente
+          setFormData(prev => ({
+            ...prev,
+            cliente_nombre: prev.cliente_nombre || clientData.nombre,
+            destino_direccion: prev.destino_direccion || clientData.direccion,
+            sector: prev.sector || clientData.sector,
+            referencia: prev.referencia || clientData.referencia
+          }));
+        }
+      } catch (error) {
+        console.error("Error fetching VIP client:", error);
+      }
+    }, 600);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [formData.cliente_telefono, tienda]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -129,11 +157,27 @@ export default function TiendaForm() {
           destino_latitud: 0,
           destino_longitud: 0,
           monto_mercancia: parseFloat(formData.monto_mercancia) || 0,
-          costo_envio: parseFloat(formData.costo_envio) || 0
+          costo_envio: parseFloat(formData.costo_envio) || 0,
+          sector: formData.sector,
+          referencia: formData.referencia
         })
       });
       
       if (res.ok) {
+        // Save to VIP directory automatically
+        await fetch('/api/clientes-vip', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tienda_id: tienda.id,
+            telefono: formData.cliente_telefono,
+            nombre: formData.cliente_nombre,
+            direccion: formData.destino_direccion,
+            sector: formData.sector,
+            referencia: formData.referencia
+          })
+        });
+
         setSuccess(true);
         setFormData(getEmptyOrder());
         fetchOrdenes(); // Refresh orders
@@ -581,6 +625,40 @@ export default function TiendaForm() {
                         </div>
                       </div>
 
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Sector (Zonificación)</label>
+                          <div className="relative">
+                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                              <MapPin className="h-5 w-5 text-gray-400" />
+                            </div>
+                            <input 
+                              type="text" 
+                              required
+                              value={formData.sector}
+                              onChange={e => setFormData({...formData, sector: e.target.value})}
+                              className="pl-10 w-full border border-gray-300 rounded-xl py-3 px-4 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-bold text-blue-700"
+                              placeholder="Ej. Piantini, Bella Vista..."
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Referencia / Apto / Local</label>
+                          <div className="relative">
+                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                              <Home className="h-5 w-5 text-gray-400" />
+                            </div>
+                            <input 
+                              type="text" 
+                              value={formData.referencia}
+                              onChange={e => setFormData({...formData, referencia: e.target.value})}
+                              className="pl-10 w-full border border-gray-300 rounded-xl py-3 px-4 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                              placeholder="Ej. Apto 4B, frente al parque"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">Ubicación de Google Maps (Opcional)</label>
                         <div className="relative">
@@ -659,7 +737,8 @@ export default function TiendaForm() {
                               <th className="px-3 py-2">Cliente</th>
                               <th className="px-3 py-2">Teléfono</th>
                               <th className="px-3 py-2">Dirección</th>
-                              <th className="px-3 py-2">URL Ubicación</th>
+                              <th className="px-3 py-2">Sector</th>
+                              <th className="px-3 py-2">REF</th>
                               <th className="px-3 py-2">COD</th>
                               <th className="px-3 py-2">Envío</th>
                               <th className="px-3 py-2"></th>
@@ -678,7 +757,10 @@ export default function TiendaForm() {
                                   <input type="text" required placeholder="Dirección" value={order.destino_direccion} onChange={(e) => handleBatchChange(index, 'destino_direccion', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1" />
                                 </td>
                                 <td className="px-2 py-2">
-                                  <input type="url" placeholder="URL Google Maps" value={order.destino_ubicacion_url} onChange={(e) => handleBatchChange(index, 'destino_ubicacion_url', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1" />
+                                  <input type="text" required placeholder="Sector" value={order.sector} onChange={(e) => handleBatchChange(index, 'sector', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1 font-bold text-blue-600" />
+                                </td>
+                                <td className="px-2 py-2">
+                                  <input type="text" placeholder="REF" value={order.referencia} onChange={(e) => handleBatchChange(index, 'referencia', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1" />
                                 </td>
                                 <td className="px-2 py-2">
                                   <input type="number" required min="0" step="0.01" placeholder="0.00" value={order.monto_mercancia} onChange={(e) => handleBatchChange(index, 'monto_mercancia', e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1" />

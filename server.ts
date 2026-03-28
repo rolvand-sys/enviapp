@@ -126,7 +126,19 @@ app.get("/api/tiendas/:id/ordenes", async (req, res) => {
 
 // Create order
 app.post("/api/ordenes", async (req, res) => {
-  const { tienda_id, cliente_nombre, cliente_telefono, destino_direccion, destino_ubicacion_url, destino_latitud, destino_longitud, monto_mercancia, costo_envio } = req.body;
+  const { 
+    tienda_id, 
+    cliente_nombre, 
+    cliente_telefono, 
+    destino_direccion, 
+    destino_ubicacion_url, 
+    destino_latitud, 
+    destino_longitud, 
+    monto_mercancia, 
+    costo_envio,
+    sector,
+    referencia
+  } = req.body;
 
   try {
     const tiendaSnapshot = await db.collection('tiendas').where('id', '==', tienda_id).limit(1).get();
@@ -161,6 +173,8 @@ app.post("/api/ordenes", async (req, res) => {
       destino_longitud: destino_longitud || 0,
       monto_mercancia,
       costo_envio,
+      sector: sector || '',
+      referencia: referencia || '',
       estatus: 'Pendiente',
       created_at: admin.firestore.FieldValue.serverTimestamp(),
       updated_at: admin.firestore.FieldValue.serverTimestamp()
@@ -212,6 +226,8 @@ app.post("/api/ordenes/batch", async (req, res) => {
         destino_longitud: 0,
         monto_mercancia: ord.monto_mercancia,
         costo_envio: ord.costo_envio,
+        sector: ord.sector || '',
+        referencia: ord.referencia || '',
         estatus: 'Pendiente',
         created_at: admin.firestore.FieldValue.serverTimestamp(),
         updated_at: admin.firestore.FieldValue.serverTimestamp()
@@ -435,6 +451,120 @@ app.post("/api/ordenes/:id/asignar", async (req, res) => {
     res.json(updatedOrder);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// VIP Clients: Search by phone
+app.get("/api/clientes-vip/:tienda_id", async (req, res) => {
+  const { tienda_id } = req.params;
+  const { telefono } = req.query;
+
+  if (!telefono) return res.status(400).json({ error: "Teléfono requerido" });
+
+  try {
+    const snap = await db.collection('clientes_vip')
+      .where('tienda_id', '==', tienda_id)
+      .where('telefono', '==', telefono)
+      .limit(1)
+      .get();
+
+    if (snap.empty) return res.status(404).json({ error: "Cliente no encontrado" });
+    res.json({ id: snap.docs[0].id, ...snap.docs[0].data() });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error al buscar cliente VIP" });
+  }
+});
+
+// VIP Clients: Save or update
+app.post("/api/clientes-vip", async (req, res) => {
+  const { tienda_id, telefono, nombre, direccion, sector, referencia } = req.body;
+  if (!tienda_id || !telefono) return res.status(400).json({ error: "Datos incompletos" });
+
+  try {
+    const snap = await db.collection('clientes_vip')
+      .where('tienda_id', '==', tienda_id)
+      .where('telefono', '==', telefono)
+      .limit(1)
+      .get();
+
+    const data = {
+      tienda_id,
+      telefono,
+      nombre,
+      direccion,
+      sector: sector || '',
+      referencia: referencia || '',
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    if (snap.empty) {
+      const id = uuidv4();
+      await db.collection('clientes_vip').doc(id).set({
+        ...data,
+        id,
+        created_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+      res.status(201).json({ success: true, id });
+    } else {
+      await snap.docs[0].ref.update(data);
+      res.json({ success: true, id: snap.docs[0].id });
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error al guardar cliente VIP" });
+  }
+});
+
+// Batch Assign Orders
+app.post("/api/ordenes/batch-asignar", async (req, res) => {
+  const { ordenes_ids, mensajero_id, tenant_id } = req.body;
+  
+  if (!Array.isArray(ordenes_ids) || !mensajero_id || !tenant_id) {
+    return res.status(400).json({ error: "Datos incompletos para asignación masiva" });
+  }
+
+  try {
+    const tenantRef = db.collection('tenants').doc(tenant_id);
+    const tenantDoc = await tenantRef.get();
+    if (!tenantDoc.exists) return res.status(404).json({ error: "Tenant no encontrado" });
+    const tenantData = tenantDoc.data() as any;
+
+    if (tenantData.balance_creditos < ordenes_ids.length) {
+      return res.status(400).json({ error: "Créditos insuficientes para asignar este lote" });
+    }
+
+    const batch = db.batch();
+    const updatedOrders: any[] = [];
+
+    for (const id of ordenes_ids) {
+      const orderRef = db.collection('ordenes').doc(id);
+      batch.update(orderRef, {
+        mensajero_id,
+        estatus: 'Asignado',
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+
+    batch.update(tenantRef, {
+      balance_creditos: admin.firestore.FieldValue.increment(-ordenes_ids.length),
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    await batch.commit();
+
+    // Get updated orders to emit via socket
+    const snap = await db.collection('ordenes').where('id', 'in', ordenes_ids).get();
+    snap.forEach(doc => {
+      const data = doc.data();
+      updatedOrders.push(data);
+      io.to(tenant_id).emit("orden_actualizada", data);
+    });
+
+    res.json({ success: true, count: ordenes_ids.length });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en asignación masiva" });
   }
 });
 
