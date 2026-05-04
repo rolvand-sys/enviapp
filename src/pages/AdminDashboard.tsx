@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { io } from 'socket.io-client';
-import { Package, MapPin, DollarSign, User, Phone, Clock, CheckCircle, Truck, AlertCircle, Home, Wallet, CreditCard, Upload, Plus, X, Users, Menu, Store, ExternalLink } from 'lucide-react';
+import { Package, MapPin, DollarSign, User, Phone, Clock, CheckCircle, Truck, AlertCircle, Home, Wallet, CreditCard, Upload, Plus, X, Users, Menu, Store } from 'lucide-react';
 
 export default function AdminDashboard() {
   const { tenantId } = useParams();
@@ -16,6 +16,55 @@ export default function AdminDashboard() {
   const [socket, setSocket] = useState<any>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   
+  // Custom states for modals
+  const [verDetalleOrdenesTiendaModalOpen, setVerDetalleOrdenesTiendaModalOpen] = useState(false);
+  const [selectedTiendaOrdenes, setSelectedTiendaOrdenes] = useState<any>(null);
+  
+  const [verDetalleLiquidacionesTiendaModalOpen, setVerDetalleLiquidacionesTiendaModalOpen] = useState(false);
+  const [selectedTiendaLiquidaciones, setSelectedTiendaLiquidaciones] = useState<any>(null);
+
+  const groupedOrdenesPorTienda = React.useMemo(() => {
+    const map = new Map();
+    ordenes.forEach(o => {
+      const tId = o.tienda_id || 'unknown';
+      if (!map.has(tId)) {
+        map.set(tId, {
+          tienda_id: tId,
+          tienda_nombre: o.tienda_nombre || 'Desconocida',
+          cantidad: 0,
+          monto_total: 0,
+          items: []
+        });
+      }
+      const g = map.get(tId);
+      g.cantidad += 1;
+      g.monto_total += (o.monto_mercancia || 0) + (o.costo_envio || 0);
+      g.items.push(o);
+    });
+    return Array.from(map.values());
+  }, [ordenes]);
+
+  const groupedLiquidacionesPorTienda = React.useMemo(() => {
+    const map = new Map();
+    liquidaciones.forEach(liq => {
+      const tId = liq.tienda_id || 'unknown';
+      if (!map.has(tId)) {
+        map.set(tId, {
+          tienda_id: tId,
+          tienda_nombre: liq.tienda_nombre || 'Desconocida',
+          cantidad: 0,
+          monto_total: 0,
+          items: []
+        });
+      }
+      const g = map.get(tId);
+      // Here liq is actually a raw liquidation row from DB, so we sum its totals
+      g.cantidad += liq.ordenes_ids ? liq.ordenes_ids.length : 0;
+      g.monto_total += (liq.total_recaudo || 0);
+      g.items.push(liq);
+    });
+    return Array.from(map.values());
+  }, [liquidaciones]);
   // Modal state for buying credits
   const [buyModalOpen, setBuyModalOpen] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState(500);
@@ -24,12 +73,6 @@ export default function AdminDashboard() {
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreview, setReceiptPreview] = useState<string>('');
   const [requestSent, setRequestSent] = useState(false);
-
-  // Batch Selection & Zoning State
-  const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
-  const [sectorFilter, setSectorFilter] = useState('');
-  const [batchMessengerId, setBatchMessengerId] = useState('');
-  const [isProcessingBatch, setIsProcessingBatch] = useState(false);
 
   // Modal state for new Mensajero
   const [newMensajeroModalOpen, setNewMensajeroModalOpen] = useState(false);
@@ -83,65 +126,6 @@ export default function AdminDashboard() {
       console.error("Error fetching liquidaciones", error);
     }
   };
-
-  const handleBatchAsignar = async () => {
-    if (!batchMessengerId || selectedOrders.length === 0) return;
-    
-    setIsProcessingBatch(true);
-    try {
-      const res = await fetch('/api/ordenes/batch-asignar', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ordenes_ids: selectedOrders,
-          mensajero_id: batchMessengerId,
-          tenant_id: tenantId
-        })
-      });
-
-      if (res.ok) {
-        setSelectedOrders([]);
-        setBatchMessengerId('');
-        // orders will update via socket
-      } else {
-        const data = await res.json();
-        alert(data.error || 'Error en asignación masiva');
-      }
-    } catch (error) {
-      console.error(error);
-      alert('Error de conexión');
-    } finally {
-      setIsProcessingBatch(false);
-    }
-  };
-
-  const verRutaOptimizada = () => {
-    if (selectedOrders.length === 0) return;
-    
-    const selectedData = ordenes.filter(o => selectedOrders.includes(o.id));
-    const destinations = selectedData
-      .map(o => encodeURIComponent(o.destino_direccion))
-      .filter(d => d !== '');
-
-    if (destinations.length === 0) return;
-
-    // Build Google Maps URL: first as destination, others as waypoints
-    const dest = destinations[destinations.length - 1];
-    const waypoints = destinations.slice(0, -1).join('|');
-    const url = `https://www.google.com/maps/dir/?api=1&destination=${dest}${waypoints ? `&waypoints=${waypoints}` : ''}&travelmode=driving`;
-    
-    window.open(url, '_blank');
-  };
-
-  const toggleOrderSelection = (id: string) => {
-    setSelectedOrders(prev => 
-      prev.includes(id) ? prev.filter(oid => oid !== id) : [...prev, id]
-    );
-  };
-
-  const filteredOrdenes = ordenes.filter(o => 
-    sectorFilter === '' || (o.sector && o.sector.toLowerCase().includes(sectorFilter.toLowerCase()))
-  );
 
   useEffect(() => {
     // Fetch initial data
@@ -658,207 +642,47 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
-              {/* Batch Actions & Filters */}
-              <div className="mb-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col sm:flex-row items-center gap-4">
-                  <div className="flex-1 w-full">
-                    <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Filtrar por Sector</label>
-                    <div className="relative">
-                      <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                      <input 
-                        type="text" 
-                        placeholder="Ej: Piantini..." 
-                        value={sectorFilter}
-                        onChange={(e) => setSectorFilter(e.target.value)}
-                        className="w-full pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                      />
-                    </div>
-                  </div>
-                  {sectorFilter && (
-                    <button onClick={() => setSectorFilter('')} className="text-xs text-gray-400 hover:text-red-500 whitespace-nowrap">
-                      Limpiar filtro
-                    </button>
-                  )}
-                </div>
-
-                <div className={`bg-white p-4 rounded-xl border-2 transition-all flex flex-col sm:flex-row items-center gap-4 ${selectedOrders.length > 0 ? 'border-blue-500 shadow-blue-100' : 'border-gray-200 shadow-sm opacity-60 grayscale'}`}>
-                  <div className="flex-1 w-full">
-                    <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1">
-                      {selectedOrders.length} Seleccionados - Asignar Lote
-                    </label>
-                    <div className="flex gap-2">
-                      <select 
-                        disabled={selectedOrders.length === 0}
-                        value={batchMessengerId}
-                        onChange={(e) => setBatchMessengerId(e.target.value)}
-                        className="flex-1 bg-gray-50 border border-gray-200 rounded-lg text-xs py-2 px-3 outline-none focus:ring-2 focus:ring-blue-500"
-                      >
-                        <option value="">Elegir Mensajero...</option>
-                        {mensajeros.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
-                      </select>
-                      <button 
-                        disabled={selectedOrders.length === 0 || !batchMessengerId || isProcessingBatch}
-                        onClick={handleBatchAsignar}
-                        className="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 disabled:opacity-50 transition-colors"
-                      >
-                        {isProcessingBatch ? '...' : 'Asignar'}
-                      </button>
-                    </div>
-                  </div>
-                  <button 
-                    disabled={selectedOrders.length === 0}
-                    onClick={verRutaOptimizada}
-                    className="w-full sm:w-auto bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-green-700 disabled:opacity-50 transition-colors flex items-center justify-center"
-                  >
-                    <Truck className="w-4 h-4 mr-2" />
-                    Ver Ruta
-                  </button>
-                </div>
-              </div>
-
             <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th scope="col" className="px-4 py-3 text-left">
-                    <input 
-                      type="checkbox" 
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setSelectedOrders(filteredOrdenes.filter(o => o.estatus === 'Pendiente').map(o => o.id));
-                        } else {
-                          setSelectedOrders([]);
-                        }
-                      }}
-                      checked={selectedOrders.length > 0 && selectedOrders.length === filteredOrdenes.filter(o => o.estatus === 'Pendiente').length}
-                    />
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID / Tienda</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cliente / Sector</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Finanzas</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Asignación</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tienda</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Órdenes Activas</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Monto Total</th>
+                  <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Acción</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {ordenes.length === 0 ? (
+                {groupedOrdenesPorTienda.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={4} className="px-6 py-12 text-center text-gray-500">
                       <Package className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                      <p className="text-lg font-medium text-gray-900">No hay órdenes</p>
-                      <p>Las nuevas órdenes aparecerán aquí automáticamente.</p>
+                      <p className="text-lg font-medium text-gray-900">No hay órdenes activas</p>
                     </td>
                   </tr>
                 ) : (
-                  filteredOrdenes.map((orden) => (
-                    <tr key={orden.id} className={`hover:bg-gray-50 transition-colors ${selectedOrders.includes(orden.id) ? 'bg-blue-50' : ''}`}>
-                      <td className="px-4 py-4">
-                        <input 
-                          type="checkbox" 
-                          disabled={orden.estatus !== 'Pendiente'}
-                          checked={selectedOrders.includes(orden.id)}
-                          onChange={() => toggleOrderSelection(orden.id)}
-                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
-                        />
+                  groupedOrdenesPorTienda.map((group) => (
+                    <tr key={group.tienda_id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm font-bold text-gray-900">{group.tienda_nombre}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-gray-900">{orden.tienda_nombre || 'Tienda'}</div>
-                        <div className="text-xs text-gray-500 font-mono mt-1">#{orden.id.substring(0, 8)}</div>
-                        <div className="text-xs text-gray-400 mt-1">
-                          {new Date(orden.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center text-sm text-gray-900 font-medium">
-                          <User className="w-4 h-4 text-gray-400 mr-2 flex-shrink-0" />
-                          {orden.cliente_nombre}
-                        </div>
-                        <div className="flex items-center text-sm text-gray-500 mt-1">
-                          <Phone className="w-4 h-4 text-gray-400 mr-2 flex-shrink-0" />
-                          {orden.cliente_telefono}
-                        </div>
-                        <div className="flex items-start text-sm text-gray-500 mt-1 max-w-xs truncate">
-                          <MapPin className="w-4 h-4 text-gray-400 mr-2 flex-shrink-0 mt-0.5" />
-                          <span className="truncate" title={orden.destino_direccion}>{orden.destino_direccion}</span>
-                        </div>
-                        {orden.destino_ubicacion_url && (
-                          <div className="flex items-start text-sm text-blue-600 mt-1 max-w-xs truncate">
-                            <a 
-                              href={orden.destino_ubicacion_url} 
-                              target="_blank" 
-                              rel="noreferrer" 
-                              className="hover:underline flex items-center"
-                            >
-                              <ExternalLink className="w-3 h-3 mr-1" />
-                              Ver ubicación en mapa
-                            </a>
-                          </div>
-                        )}
-                        {orden.sector && (
-                          <div className="mt-1">
-                            <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-[10px] font-black rounded uppercase tracking-wider border border-blue-200">
-                              {orden.sector}
-                            </span>
-                          </div>
-                        )}
-                        {orden.referencia && (
-                          <div className="text-[10px] text-gray-400 mt-1 italic truncate max-w-[180px]">
-                            Ref: {orden.referencia}
-                          </div>
-                        )}
+                        <div className="text-sm font-medium text-blue-600 bg-blue-50 px-3 py-1 rounded-full inline-block">{group.cantidad}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-900">
-                          <span className="text-gray-500 mr-1">COD:</span> 
-                          <span className="font-bold text-green-600">RD${orden.monto_mercancia.toFixed(2)}</span>
-                        </div>
-                        <div className="text-sm text-gray-900 mt-1">
-                          <span className="text-gray-500 mr-1">Envío:</span> 
-                          RD${orden.costo_envio.toFixed(2)}
-                        </div>
+                        <div className="text-sm font-bold text-green-600">${group.monto_total.toFixed(2)}</div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex flex-col gap-2 items-start">
-                          <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full border flex items-center ${getStatusColor(orden.estatus)}`}>
-                            {getStatusIcon(orden.estatus)}
-                            {orden.estatus}
-                          </span>
-                          {orden.pago_confirmado_tienda === 1 && (
-                            <span className="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full border bg-green-100 text-green-800 border-green-200">
-                              <CheckCircle className="w-3 h-3 mr-1" />
-                              Confirmado por la Tienda
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                        {orden.estatus === 'Pendiente' ? (
-                          <div className="flex items-center space-x-2">
-                            <select 
-                              className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md border disabled:bg-gray-100 disabled:text-gray-400"
-                              onChange={(e) => asignarMensajero(orden.id, e.target.value)}
-                              defaultValue=""
-                              disabled={tenant?.balance_creditos <= 0}
-                            >
-                              <option value="" disabled>Asignar a...</option>
-                              {mensajeros.map(m => (
-                                <option key={m.id} value={m.id}>{m.nombre}</option>
-                              ))}
-                            </select>
-                          </div>
-                        ) : (
-                          <div className="flex items-center text-sm text-gray-900">
-                            <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold mr-3">
-                              {mensajeros.find(m => m.id === orden.mensajero_id)?.nombre.charAt(0) || 'M'}
-                            </div>
-                            <div>
-                              <div className="font-medium">{mensajeros.find(m => m.id === orden.mensajero_id)?.nombre || 'Mensajero'}</div>
-                              <div className="text-xs text-gray-500">Asignado</div>
-                            </div>
-                          </div>
-                        )}
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <button 
+                          onClick={() => {
+                            setSelectedTiendaOrdenes(group);
+                            setVerDetalleOrdenesTiendaModalOpen(true);
+                          }}
+                          className="text-blue-600 hover:text-blue-900 font-bold"
+                        >
+                          Ver Detalles
+                        </button>
                       </td>
                     </tr>
                   ))
@@ -1089,96 +913,44 @@ export default function AdminDashboard() {
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
                         <tr>
-                          <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha / ID</th>
                           <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tienda</th>
-                          <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Recaudo Total</th>
-                          <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Desglose</th>
-                          <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">A Pagar (Tienda)</th>
-                          <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
+                          <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Órdenes</th>
+                          <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Monto Total</th>
                           <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Acción</th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {liquidaciones.length === 0 ? (
+                        {groupedLiquidacionesPorTienda.length === 0 ? (
                           <tr>
-                            <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
-                              <DollarSign className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                              <p>No hay liquidaciones registradas.</p>
+                            <td colSpan={4} className="px-6 py-8 text-center text-gray-500">
+                              No hay liquidaciones registradas.
                             </td>
                           </tr>
                         ) : (
-                          liquidaciones.map((liq) => (
-                            <tr key={liq.id} className="hover:bg-gray-50 transition-colors">
+                          groupedLiquidacionesPorTienda.map((group: any) => (
+                            <tr 
+                              key={group.tienda_id} 
+                              className="hover:bg-gray-50 transition-colors cursor-pointer"
+                            >
                               <td className="px-6 py-4 whitespace-nowrap">
-                                <div className="text-sm font-bold text-gray-900">{liq.fecha_cierre}</div>
-                                <div className="text-xs text-gray-500">#{liq.id.substring(0, 8)}</div>
+                                <div className="text-sm font-bold text-gray-900">{group.tienda_nombre}</div>
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap">
-                                <div className="text-sm font-medium text-gray-900">{liq.tienda_nombre}</div>
+                                <div className="text-sm font-medium text-blue-600 bg-blue-50 px-3 py-1 rounded-full inline-block">{group.cantidad}</div>
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap">
-                                <div className="text-sm font-bold text-green-600">${liq.total_recaudo.toFixed(2)}</div>
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                <div className="text-xs text-gray-500">Mensajeros: <span className="text-gray-900 font-medium">${liq.pago_mensajeros.toFixed(2)}</span></div>
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                <div className="text-sm font-black text-blue-600">${liq.pago_tienda.toFixed(2)}</div>
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                <div className="flex flex-col space-y-1">
-                                  <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                                    liq.estatus_pago_tienda === 'Pagado' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
-                                  }`}>
-                                    Tienda: {liq.estatus_pago_tienda || 'Pendiente'}
-                                    {liq.comprobante_pago_tienda && (
-                                      <button 
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setComprobanteUrl(liq.comprobante_pago_tienda);
-                                          setVerComprobanteModalOpen(true);
-                                        }} 
-                                        className="ml-1 underline text-blue-600 hover:text-blue-800"
-                                      >
-                                        (Ver)
-                                      </button>
-                                    )}
-                                  </span>
-                                  <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                                    liq.estatus_pago_mensajero === 'Pagado' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
-                                  }`}>
-                                    Mensajero: {liq.estatus_pago_mensajero || 'Pendiente'}
-                                  </span>
-                                </div>
+                                <div className="text-sm font-bold text-green-600">${group.monto_total.toFixed(2)}</div>
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                <div className="flex flex-col space-y-2 items-end">
-                                  {liq.estatus_pago_tienda !== 'Pagado' && (
-                                    <button 
-                                      onClick={() => {
-                                        setLiquidacionAPagar(liq.id);
-                                        setPagarLiquidacionModalOpen(true);
-                                      }}
-                                      className="bg-green-600 text-white hover:bg-green-700 px-3 py-1 rounded-md text-xs font-bold transition-colors"
-                                    >
-                                      Pagar Tienda
-                                    </button>
-                                  )}
-                                  {liq.estatus_pago_mensajero !== 'Pagado' && (
-                                    <button 
-                                      onClick={() => {
-                                        setLiquidacionAPagar(liq.id);
-                                        setPagarMensajeroModalOpen(true);
-                                      }}
-                                      className="bg-blue-600 text-white hover:bg-blue-700 px-3 py-1 rounded-md text-xs font-bold transition-colors"
-                                    >
-                                      Pagar Mensajero
-                                    </button>
-                                  )}
-                                  {liq.estatus_pago_tienda === 'Pagado' && liq.estatus_pago_mensajero === 'Pagado' && (
-                                    <span className="text-gray-400 text-xs">Completado</span>
-                                  )}
-                                </div>
+                                <button 
+                                  className="text-blue-600 hover:text-blue-900 font-bold"
+                                  onClick={() => {
+                                    setSelectedTiendaLiquidaciones(group);
+                                    setVerDetalleLiquidacionesTiendaModalOpen(true);
+                                  }}
+                                >
+                                  Ver Detalles
+                                </button>
                               </td>
                             </tr>
                           ))
@@ -1715,6 +1487,228 @@ export default function AdminDashboard() {
                 alt="Comprobante" 
                 className="max-h-[70vh] object-contain rounded-lg" 
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Detalle de Órdenes por Tienda */}
+      {verDetalleOrdenesTiendaModalOpen && selectedTiendaOrdenes && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900">Órdenes Activas: {selectedTiendaOrdenes.tienda_nombre}</h3>
+                <p className="text-sm text-gray-500">Mostrando {selectedTiendaOrdenes.cantidad} órdenes</p>
+              </div>
+              <button 
+                onClick={() => setVerDetalleOrdenesTiendaModalOpen(false)} 
+                className="text-gray-500 hover:text-gray-700 bg-white shadow-sm border border-gray-200 rounded-full p-2 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-auto p-6">
+              <div className="overflow-x-auto border border-gray-100 rounded-xl">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cliente / Destino</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Finanzas</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Asignación</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {selectedTiendaOrdenes.items.map((orden: any) => (
+                      <tr key={orden.id} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-xs text-gray-500 font-mono mt-1">#{orden.id.substring(0, 8)}</div>
+                          <div className="text-xs text-gray-400 mt-1">
+                            {new Date(orden.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center text-sm text-gray-900 font-medium">
+                            <User className="w-4 h-4 text-gray-400 mr-2 flex-shrink-0" />
+                            {orden.cliente_nombre}
+                          </div>
+                          <div className="flex items-center text-sm text-gray-500 mt-1">
+                            <Phone className="w-4 h-4 text-gray-400 mr-2 flex-shrink-0" />
+                            {orden.cliente_telefono}
+                          </div>
+                          <div className="flex items-start text-sm text-gray-500 mt-1 max-w-xs truncate">
+                            <MapPin className="w-4 h-4 text-gray-400 mr-2 flex-shrink-0 mt-0.5" />
+                            <span className="truncate" title={orden.destino_direccion}>{orden.destino_direccion}</span>
+                          </div>
+                          {orden.destino_ubicacion_url && (
+                            <div className="flex items-start text-sm text-blue-600 mt-1 max-w-xs truncate">
+                              <a 
+                                href={orden.destino_ubicacion_url} 
+                                target="_blank" 
+                                rel="noreferrer" 
+                                className="hover:underline flex items-center"
+                              >
+                                <MapPin className="w-4 h-4 mr-2 flex-shrink-0" />
+                                Ver ubicación en mapa
+                              </a>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm text-gray-900">
+                            <span className="text-gray-500 mr-1">COD:</span> 
+                            <span className="font-bold text-green-600">RD${orden.monto_mercancia.toFixed(2)}</span>
+                          </div>
+                          <div className="text-sm text-gray-900 mt-1">
+                            <span className="text-gray-500 mr-1">Envío:</span> 
+                            RD${orden.costo_envio.toFixed(2)}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex flex-col gap-2 items-start">
+                            <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full border flex items-center ${getStatusColor(orden.estatus)}`}>
+                              {getStatusIcon(orden.estatus)}
+                              {orden.estatus}
+                            </span>
+                            {orden.pago_confirmado_tienda === 1 && (
+                              <span className="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full border bg-green-100 text-green-800 border-green-200">
+                                <CheckCircle className="w-3 h-3 mr-1" />
+                                Confirmado por la Tienda
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                          {orden.estatus === 'Pendiente' ? (
+                            <div className="flex items-center space-x-2">
+                              <select 
+                                className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md border disabled:bg-gray-100 disabled:text-gray-400"
+                                onChange={(e) => asignarMensajero(orden.id, e.target.value)}
+                                defaultValue=""
+                                disabled={tenant?.balance_creditos <= 0}
+                              >
+                                <option value="" disabled>Asignar a...</option>
+                                {mensajeros.map(m => (
+                                  <option key={m.id} value={m.id}>{m.nombre}</option>
+                                ))}
+                              </select>
+                            </div>
+                          ) : (
+                            <div className="flex items-center text-sm text-gray-900">
+                              <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold mr-3">
+                                {mensajeros.find(m => m.id === orden.mensajero_id)?.nombre.charAt(0) || 'M'}
+                              </div>
+                              <div>
+                                <div className="font-medium">{mensajeros.find(m => m.id === orden.mensajero_id)?.nombre || 'Mensajero'}</div>
+                                <div className="text-xs text-gray-500">Asignado</div>
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="p-6 bg-gray-50 border-t border-gray-100 flex justify-end">
+              <button 
+                onClick={() => setVerDetalleOrdenesTiendaModalOpen(false)}
+                className="px-6 py-2 bg-white border border-gray-300 rounded-xl font-bold text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Detalle de Liquidaciones por Tienda */}
+      {verDetalleLiquidacionesTiendaModalOpen && selectedTiendaLiquidaciones && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900">Liquidaciones: {selectedTiendaLiquidaciones.tienda_nombre}</h3>
+                <p className="text-sm text-gray-500">Recaudo Total: ${selectedTiendaLiquidaciones.monto_total.toFixed(2)}</p>
+              </div>
+              <button 
+                onClick={() => setVerDetalleLiquidacionesTiendaModalOpen(false)} 
+                className="text-gray-500 hover:text-gray-700 bg-white shadow-sm border border-gray-200 rounded-full p-2 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-auto p-6">
+              <div className="overflow-x-auto border border-gray-100 rounded-xl">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Recaudo</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Mensajería</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tienda</th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
+                      <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {selectedTiendaLiquidaciones.items.map((group: any) => (
+                      <tr 
+                        key={`${group.tienda_id}_${group.fecha_cierre}`} 
+                        className="hover:bg-gray-50 transition-colors cursor-pointer"
+                        onClick={() => {
+                          setSelectedLiquidacionGroup(group);
+                          setVerDetalleLiqModalOpen(true);
+                        }}
+                      >
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm font-bold text-gray-900">{group.fecha_cierre}</div>
+                          <div className="text-xs text-blue-600 font-medium">{group.ordenes_ids?.length || 0} órdenes</div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm font-bold text-green-600">${group.total_recaudo.toFixed(2)}</div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-xs text-gray-500">Mensajeros: <span className="text-gray-900 font-medium">${group.pago_mensajeros.toFixed(2)}</span></div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm font-black text-blue-600">${group.pago_tienda.toFixed(2)}</div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex flex-col space-y-1">
+                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                              group.estatus_pago_tienda === 'Pagado' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              Tienda: {group.estatus_pago_tienda}
+                            </span>
+                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                              group.estatus_pago_mensajero === 'Pagado' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              Mensajero: {group.estatus_pago_mensajero}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                          <button className="text-blue-600 hover:text-blue-900 font-bold">Ver Detalles</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="p-6 bg-gray-50 border-t border-gray-100 flex justify-end">
+              <button 
+                onClick={() => setVerDetalleLiquidacionesTiendaModalOpen(false)}
+                className="px-6 py-2 bg-white border border-gray-300 rounded-xl font-bold text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                Cerrar
+              </button>
             </div>
           </div>
         </div>
